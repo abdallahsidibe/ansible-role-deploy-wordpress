@@ -5,7 +5,11 @@
 apache_package: "{{ 'apache2' if ansible_facts['os_family'] == 'Debian' else 'httpd' }}"
 php_packages:
   - php
-  - "{{ 'php-mysql' if ansible_facts['os_family'] == 'Debian' else 'php-mysqlnd' }}"
+  - php-mysql
 packages_common:
   - wget
   - unzip
+mariadb_service_name: "{{ 'mariadb' if ansible_os_family == 'RedHat' else 'mariadb' }}"
+
+#mariadb_service_name: "{{ 'mysql' if ansible_os_family == 'Debian' else 'mariadb' }}"
+apache_service_name: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"

@@ -1,112 +1,166 @@
-#SPDX-License-Identifier: MIT-0
-
-# tasks/main.yml
+# SPDX-License-Identifier: MIT-0
 ---
-
-- name: Update apt cache (Debian)
+# Installer les bibliothèques nécessaires pour gérer MySQL/MariaDB
+- name: Installer les bibliothèques Python pour Ansible et MySQL (Debian/Ubuntu)
   apt:
-    update_cache: yes
-  when: ansible_facts['os_family'] == "Debian"
+    name:
+      - python3-pymysql
+      - python3-mysql.connector
+    state: present
+  when: ansible_os_family == "Debian"
 
-- name: Install required packages
-  package:
-    name: "{{ [apache_package] + php_packages + packages_common + ['mariadb-server'] }}"
+- name: Installer les bibliothèques Python pour Ansible et MySQL (RedHat/Rocky)
+  dnf:
+    name:
+      - python3-PyMySQL
+    state: present
+  when: ansible_os_family == "RedHat"
+# 1. Mettre à jour les paquets des systèmes
+- name: Mettre à jour les paquets (RedHat/Rocky)
+  when: ansible_os_family == "RedHat"
+  dnf:
+    name: "*"
+    state: latest
+    update_cache: yes
+
+- name: Installer apt-utils et mettre à jour les paquets (Debian/Ubuntu)
+  when: ansible_os_family == "Debian"
+  apt:
+    name: apt-utils
+    state: present
+    update_cache: yes
+
+# 2. Installer les paquets nécessaires
+- name: Installer les paquets nécessaires (RedHat/Rocky)
+  when: ansible_os_family == "RedHat"
+  dnf:
+    name:
+      - httpd
+      - php
+      - php-mysqlnd
+      - mariadb-server
+      - wget
+      - unzip
     state: present
 
-- name: Remove default Apache index.html
+- name: Installer les paquets nécessaires (Debian/Ubuntu)
+  when: ansible_os_family == "Debian"
+  apt:
+    name:
+      - apache2
+      - php
+      - libapache2-mod-php
+      - php-mysql
+      - mariadb-server
+      - wget
+      - unzip
+    state: present
+
+
+# 3. Nettoyer et résoudre les installations interrompues
+- name: Résoudre les installations interrompues (Debian/Ubuntu)
+  when: ansible_os_family == "Debian"
+  command: apt-get install --fix-broken -y
+
+# 4. Activer et démarrer les services Apache
+- name: Activer et démarrer Apache
+  service:
+    name: "{{ apache_service_name }}"
+    state: started
+    enabled: yes
+
+# 5. Supprimer la page par défaut d'Apache
+- name: Supprimer la page par défaut d'Apache
   file:
     path: /var/www/html/index.html
     state: absent
 
-- name: Ensure MariaDB is started
-  shell: mysqld_safe --datadir=/var/lib/mysql &
-  async: 10
-  poll: 0
+# 6. Activer et démarrer les services MariaDB
+- name: Vérifier l'installation de MariaDB
+  stat:
+    path: /usr/bin/mysql
+  register: mariadb_binary
 
-- name: Wait for MariaDB to start
-  wait_for:
-    port: 3306
-    delay: 10
+- name: Démarrer MariaDB seulement si installé
+  service:
+    name: "{{ mariadb_service_name }}"
+    state: started
+    enabled: yes
+  when: mariadb_binary.stat.exists
 
-- name: Secure MariaDB - set root password
+- name: Tester la connexion MariaDB
   shell: |
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mariadb_root_password }}';"
-  args:
-    executable: /bin/bash
+    mysql -uroot -pexamplerootPW -e "SELECT VERSION();"
+  ignore_errors: yes
 
-- name: Remove anonymous users and test db
-  shell: |
-    mysql -uroot -p{{ mariadb_root_password }} -e "
-      DELETE FROM mysql.user WHERE User=''; 
-      DROP DATABASE IF EXISTS test;
-      DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-      FLUSH PRIVILEGES;"
-  args:
-    executable: /bin/bash
 
-- name: Create WordPress database and user
-  shell: |
-    mysql -uroot -p{{ mariadb_root_password }} -e "
-      CREATE DATABASE {{ wordpress_db_name }};
-      CREATE USER '{{ wordpress_db_user }}'@'localhost' IDENTIFIED BY '{{ wordpress_db_password }}';
-      GRANT ALL PRIVILEGES ON {{ wordpress_db_name }}.* TO '{{ wordpress_db_user }}'@'localhost';
-      FLUSH PRIVILEGES;"
-  args:
-    executable: /bin/bash
+# 7. Configuration de MariaDB
+- name: Sécuriser MariaDB - Modifier le mot de passe root
+  mysql_user:
+    name: root
+    host: localhost
+    password: examplerootPW
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    state: present
 
-- name: Download WordPress
+- name: Supprimer les utilisateurs anonymes de MariaDB
+  mysql_user:
+    name: ''
+    state: absent
+    login_user: root
+    login_password: examplerootPW
+
+- name: Supprimer la base de test de MariaDB
+  mysql_db:
+    name: test
+    state: absent
+    login_user: root
+    login_password: examplerootPW
+
+- name: Rafraîchir les privilèges de MariaDB
+  command: mysql -uroot -pexamplerootPW -e "FLUSH PRIVILEGES"
+
+- name: Créer la base de données WordPress
+  mysql_db:
+    name: wordpress
+    state: present
+    login_user: root
+    login_password: examplerootPW
+
+- name: Créer un utilisateur MariaDB pour WordPress
+  mysql_user:
+    name: example
+    password: examplePW
+    host: localhost
+    priv: 'wordpress.*:ALL'
+    state: present
+    login_user: root
+    login_password: examplerootPW
+
+# 8. Télécharger et déployer WordPress
+- name: Télécharger WordPress
   get_url:
     url: https://wordpress.org/latest.zip
     dest: /tmp/latest.zip
 
-- name: Unzip WordPress
+- name: Décompresser WordPress
   unarchive:
     src: /tmp/latest.zip
+    dest: /tmp
+    remote_src: yes
+
+- name: Copier WordPress dans le dossier /var/www/html/
+  copy:
+    src: /tmp/wordpress/
     dest: /var/www/html/
     remote_src: yes
 
-- name: Change ownership of WordPress files
-  file:
-    path: /var/www/html
-    owner: www-data
-    group: www-data
-    recurse: yes
+# 9. Ajuster les permissions des fichiers WordPress
+- name: Changer les permissions du dossier web (RedHat/Rocky)
+  when: ansible_os_family == "RedHat"
+  command: chown -R apache:apache /var/www/html/
 
-- name: Copy wp-config.php
-  template:
-    src: wp-config.php.j2
-    dest: /var/www/html/wp-config.php
-    owner: www-data
-    group: www-data
-    mode: '0640'
-
-- name: Configure Apache for WordPress (Debian)
-  copy:
-    dest: /etc/apache2/sites-available/wordpress.conf
-    content: |
-      <VirtualHost *:80>
-          ServerAdmin admin@localhost
-          DocumentRoot /var/www/html
-          <Directory /var/www/html>
-              AllowOverride All
-          </Directory>
-          ErrorLog ${APACHE_LOG_DIR}/error.log
-          CustomLog ${APACHE_LOG_DIR}/access.log combined
-      </VirtualHost>
-  when: ansible_facts['os_family'] == "Debian"
-  notify:
-    - reload apache
-
-- name: Enable WordPress site (Debian)
-  command: a2ensite wordpress.conf
-  when: ansible_facts['os_family'] == "Debian"
-
-- name: Enable mod_rewrite (Debian)
-  command: a2enmod rewrite
-  when: ansible_facts['os_family'] == "Debian"
-
-- name: Reload Apache
-  service:
-    name: "{{ apache_package }}"
-    state: reloaded
+- name: Changer les permissions du dossier web (Debian/Ubuntu)
+  when: ansible_os_family == "Debian"
+  command: chown -R www-data:www-data /var/www/html/
 

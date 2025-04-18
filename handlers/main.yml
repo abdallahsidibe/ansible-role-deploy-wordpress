@@ -2,12 +2,12 @@
 ---
 # handlers file for ansible-role-deploy-wordpress
 
-- name: restart apache
+- name: Redémarrer Apache
   service:
-    name: "{{ apache_package }}"
+    name: "{{ apache_service_name }}"
     state: restarted
 
-- name: reload apache
+- name: Redémarrer MariaDB
   service:
-    name: "{{ apache_package }}"
-    state: reloaded
+    name: "{{ mariadb_service_name }}"
+    state: restarted
