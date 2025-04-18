@@ -1,0 +1,112 @@
+#SPDX-License-Identifier: MIT-0
+
+# tasks/main.yml
+---
+
+- name: Update apt cache (Debian)
+  apt:
+    update_cache: yes
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install required packages
+  package:
+    name: "{{ [apache_package] + php_packages + packages_common + ['mariadb-server'] }}"
+    state: present
+
+- name: Remove default Apache index.html
+  file:
+    path: /var/www/html/index.html
+    state: absent
+
+- name: Ensure MariaDB is started
+  shell: mysqld_safe --datadir=/var/lib/mysql &
+  async: 10
+  poll: 0
+
+- name: Wait for MariaDB to start
+  wait_for:
+    port: 3306
+    delay: 10
+
+- name: Secure MariaDB - set root password
+  shell: |
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mariadb_root_password }}';"
+  args:
+    executable: /bin/bash
+
+- name: Remove anonymous users and test db
+  shell: |
+    mysql -uroot -p{{ mariadb_root_password }} -e "
+      DELETE FROM mysql.user WHERE User=''; 
+      DROP DATABASE IF EXISTS test;
+      DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+      FLUSH PRIVILEGES;"
+  args:
+    executable: /bin/bash
+
+- name: Create WordPress database and user
+  shell: |
+    mysql -uroot -p{{ mariadb_root_password }} -e "
+      CREATE DATABASE {{ wordpress_db_name }};
+      CREATE USER '{{ wordpress_db_user }}'@'localhost' IDENTIFIED BY '{{ wordpress_db_password }}';
+      GRANT ALL PRIVILEGES ON {{ wordpress_db_name }}.* TO '{{ wordpress_db_user }}'@'localhost';
+      FLUSH PRIVILEGES;"
+  args:
+    executable: /bin/bash
+
+- name: Download WordPress
+  get_url:
+    url: https://wordpress.org/latest.zip
+    dest: /tmp/latest.zip
+
+- name: Unzip WordPress
+  unarchive:
+    src: /tmp/latest.zip
+    dest: /var/www/html/
+    remote_src: yes
+
+- name: Change ownership of WordPress files
+  file:
+    path: /var/www/html
+    owner: www-data
+    group: www-data
+    recurse: yes
+
+- name: Copy wp-config.php
+  template:
+    src: wp-config.php.j2
+    dest: /var/www/html/wp-config.php
+    owner: www-data
+    group: www-data
+    mode: '0640'
+
+- name: Configure Apache for WordPress (Debian)
+  copy:
+    dest: /etc/apache2/sites-available/wordpress.conf
+    content: |
+      <VirtualHost *:80>
+          ServerAdmin admin@localhost
+          DocumentRoot /var/www/html
+          <Directory /var/www/html>
+              AllowOverride All
+          </Directory>
+          ErrorLog ${APACHE_LOG_DIR}/error.log
+          CustomLog ${APACHE_LOG_DIR}/access.log combined
+      </VirtualHost>
+  when: ansible_facts['os_family'] == "Debian"
+  notify:
+    - reload apache
+
+- name: Enable WordPress site (Debian)
+  command: a2ensite wordpress.conf
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Enable mod_rewrite (Debian)
+  command: a2enmod rewrite
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Reload Apache
+  service:
+    name: "{{ apache_package }}"
+    state: reloaded
+
